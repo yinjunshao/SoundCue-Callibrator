@@ -1,0 +1,70 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>HRTF probe</title></head><body>
+<script>
+// Renders the sandbox's exact panner graph offline and measures L/R channel
+// energy at 0° / +90° / -90°. HRTF must produce a strong right bias at +90°,
+// strong left bias at -90°, and near-equal at 0°.
+const SR = 48000;
+async function renderAz(azDeg) {
+  const ctx = new OfflineAudioContext(2, Math.floor(SR * 0.35), SR);
+  const noise = ctx.createBufferSource();
+  const buf = ctx.createBuffer(1, Math.floor(SR * 0.3), SR);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  noise.buffer = buf;
+  const p = ctx.createPanner();
+  p.panningModel = 'HRTF';
+  p.distanceModel = 'linear';
+  p.refDistance = 1;
+  p.maxDistance = 50;
+  p.rolloffFactor = 1;
+  const az = azDeg * Math.PI / 180;
+  p.positionX.value = 3 * Math.sin(az);
+  p.positionY.value = 0;
+  p.positionZ.value = -3 * Math.cos(az);
+  noise.connect(p);
+  p.connect(ctx.destination);
+  noise.start(0);
+  return ctx.startRendering();
+}
+async function stats(az) {
+  const b = await renderAz(az);
+  const L = b.getChannelData(0), R = b.getChannelData(1);
+  let lr = 0, rr = 0;
+  for (let i = 0; i < L.length; i++) { lr += L[i] * L[i]; rr += R[i] * R[i]; }
+  return { az, l: Math.sqrt(lr / L.length), r: Math.sqrt(rr / R.length),
+           ratio: Math.sqrt(rr / L.length) / (Math.sqrt(lr / L.length) + 1e-9) };
+}
+(async () => {
+  const out = [];
+  const deadline = setTimeout(() => {
+    out.push('TIMEOUT — offline render did not complete under virtual time');
+    finish(out);
+  }, 4000);
+  let center, right, left;
+  try {
+    center = await stats(0);
+    right = await stats(90);
+    left = await stats(-90);
+  } catch (err) {
+    clearTimeout(deadline);
+    out.push('PROBE_ERROR ' + err.message);
+    finish(out);
+    return;
+  }
+  clearTimeout(deadline);
+  const f = (x) => x.toFixed(4);
+  out.push('center 0°   L=' + f(center.l) + ' R=' + f(center.r) + '  R/L=' + center.ratio.toFixed(3));
+  out.push('right  +90° L=' + f(right.l) + ' R=' + f(right.r) + '  R/L=' + right.ratio.toFixed(3));
+  out.push('left   -90° L=' + f(left.l) + ' R=' + f(left.r) + '  R/L=' + left.ratio.toFixed(3));
+  const ok = right.ratio > 1.5 && left.ratio < 0.67 && center.ratio > 0.8 && center.ratio < 1.25;
+  out.push(ok ? 'HRTF_PROBE_OK — directional cues present' : 'HRTF_PROBE_FAIL');
+  finish(out);
+})();
+function finish(out) {
+  const pre = document.createElement('pre');
+  pre.id = 'probe';
+  pre.textContent = out.join('\n');
+  document.body.appendChild(pre);
+  document.title = 'PROBE_DONE';
+}
+</script></body></html>
